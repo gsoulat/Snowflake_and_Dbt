@@ -1,515 +1,380 @@
-# Pipeline NYC Taxi : Snowflake + DBT
-## Guide Complet de Transformation de Données Volumineuses
+# Brief Projet Data Engineering - Formation Simplon
+## Pipeline NYC Taxi : Analyse de Données Massives avec Snowflake
 
 ---
 
-## 📋 Vue d'Ensemble du Projet
+## 📋 Contexte du Projet
 
-### 🎯 Objectif
-Créer un pipeline de données robuste pour analyser **200+ GB** de données réelles de taxis NYC avec Snowflake et DBT.
+### 🎯 Objectif Pédagogique
+Maîtriser la construction d'un pipeline de données professionnel en traitant des données réelles volumineuses de NYC Taxi.
 
 ### 📊 Dataset : NYC Taxi Trip Data
-- **Volume** : 3+ milliards de trajets depuis 2009
-- **Taille** : 200+ GB compressés, 750+ GB décompressés
+- **Volume** : ~40 millions de trajets (année 2024 + début 2025)
+- **Taille** : ~8 GB de données compressées
 - **Source** : [NYC Taxi & Limousine Commission](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page)
 - **Format** : Fichiers Parquet mensuels
+- **Exemple de lien** : https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-01.parquet
 
-### 🏗️ Architecture
+### 🎓 Compétences Visées
+- Ingestion de données depuis sources externes
+- Architecture de data warehouse (RAW → STAGING → FINAL)
+- Nettoyage et transformation de données
+- Documentation et tests de qualité
+- (Option) Orchestration de pipelines
+
+### 🏗️ Architecture du Data Warehouse
 ```
-RAW DATA → STAGING → INTERMEDIATE → MARTS
-   ↓          ↓           ↓          ↓
-Parquet → Nettoyage → Calculs → Analyses
+📁 Fichiers Parquet → RAW → STAGING → FINAL
+                      ↓        ↓         ↓
+               Données brutes → Nettoyage → Tables analytiques
 ```
+
+#### Schémas Snowflake Requis
+1. **RAW** : Tables sources (données brutes importées)
+2. **STAGING** : Tables de nettoyage et transformation
+3. **FINAL** : Tables finales pour analyse et dataviz
 
 ---
 
-## 🚀 Étapes de Mise en Œuvre
+## 📚 PARTIE 1 : TRONC COMMUN (OBLIGATOIRE)
 
-### 1. **Préparation** (30 min)
-```bash
-# Créer compte Snowflake (essai gratuit)
-# Installer DBT
-pip install dbt-snowflake
+### ✅ 1.1 Configuration Snowflake
 
-# Vérifier installation
-dbt --version
-```
+**Créer l'infrastructure de base :**
 
-### 2. **Configuration Snowflake** (15 min)
-```sql
--- Configuration initiale
-USE ROLE ACCOUNTADMIN;
+**Warehouse (ressource de calcul) :**
+- Nom : `NYC_TAXI_WH`
+- Taille : MEDIUM (ajustable selon vos crédits)
+- Auto-suspend : 60 secondes (économise les crédits)
 
-CREATE WAREHOUSE NYC_TAXI_WH WITH
-  WAREHOUSE_SIZE = 'LARGE'
-  AUTO_SUSPEND = 60;
+**Base de données :**
+- Nom : `NYC_TAXI_DB`
 
-CREATE DATABASE NYC_TAXI_DB;
-CREATE SCHEMA NYC_TAXI_DB.RAW_DATA;
-CREATE SCHEMA NYC_TAXI_DB.STAGING; 
-CREATE SCHEMA NYC_TAXI_DB.MARTS;
-```
+**Schémas à créer :**
+- `RAW` : Pour stocker les données brutes importées
+- `STAGING` : Pour les données nettoyées et transformées
+- `FINAL` : Pour les tables finales d'analyse
 
-### 3. **Téléchargement des Données** (2-4h)
-```python
-# Script de téléchargement automatisé
-import requests
-from tqdm import tqdm
+### ✅ 1.2 Chargement des Données (2024-2025)
+**Objectif** : Charger tous les mois de janvier 2024 à aujourd'hui
 
-def download_nyc_taxi_data(years=[2023, 2024]):
-    base_url = "https://d37ci6vzurychx.cloudfront.net/trip-data/"
-    # Télécharge ~50GB pour 2 années
-```
+**Deux options de chargement possibles :**
 
-### 4. **Chargement dans Snowflake** (30 min)
-```sql
--- Créer table de destination
-CREATE TABLE yellow_taxi_trips_raw (
-    vendorid INTEGER,
-    tpep_pickup_datetime TIMESTAMP,
-    tpep_dropoff_datetime TIMESTAMP,
-    -- ... autres colonnes
-);
+**Option A : Via Snowflake directement (recommandé)**
+- Utiliser les stages externes de Snowflake
+- Charger directement depuis l'URL source
 
--- Charger via stage
-COPY INTO yellow_taxi_trips_raw 
-FROM @nyc_taxi_stage
-FILE_FORMAT = (TYPE = 'PARQUET');
-```
+**Option B : Via script Python**
+- Télécharger les fichiers en local puis charger
+- Format des fichiers : `yellow_tripdata_YYYY-MM.parquet`
+- URL de base : `https://d37ci6vzurychx.cloudfront.net/trip-data/`
+- Exemple : `yellow_tripdata_2024-01.parquet`, `yellow_tripdata_2024-02.parquet`, etc.
+
+**Table RAW à créer :**
+- Nom : `RAW.yellow_taxi_trips`
+- Contient : Toutes les données brutes sans modification
+- Colonnes principales : dates pickup/dropoff, distances, montants, zones, etc.
+
+### ✅ 1.3 Analyse et Nettoyage des Données
+**Problèmes identifiés dans les données** :
+- 15.54% de valeurs manquantes
+- 4.15% de montants négatifs
+- 2.62% de trajets avec distance zéro
+- Valeurs extrêmes aberrantes (distance > 1000 miles)
+
+**Actions de nettoyage requises** :
+1. Filtrer les montants négatifs
+2. Exclure les trajets avec dates incohérentes
+3. Gérer les valeurs manquantes
+4. Supprimer les outliers extrêmes
 
 ---
 
-## 🔄 Pipeline de Transformation DBT
+### ✅ 1.4 Transformations de Base
 
-### 📁 Structure du Projet
-```
-models/
-├── staging/
-│   └── stg_yellow_taxi_trips.sql      # Nettoyage
-├── intermediate/
-│   └── int_trip_metrics.sql           # Calculs
-├── marts/
-│   ├── core/
-│   │   └── fact_trips.sql             # Table de faits
-│   └── analytics/
-│       ├── daily_trip_summary.sql     # Résumés quotidiens
-│       ├── hourly_demand_patterns.sql # Patterns horaires
-│       ├── location_analysis.sql      # Analyse géographique
-│       └── revenue_analysis.sql       # Analyse financière
-```
+#### Tables à créer dans STAGING :
 
----
+**Table principale nettoyée :**
+- Nom : `STAGING.clean_trips`
+- Source : `RAW.yellow_taxi_trips`
+- Filtres à appliquer :
+  - Éliminer les montants négatifs (fare_amount, total_amount)
+  - Garder seulement les trajets avec pickup < dropoff
+  - Filtrer les distances entre 0.1 et 100 miles
+  - Exclure les zones NULL (PULocationID, DOLocationID)
 
-## 🧹 ÉTAPE 1 : Staging - Nettoyage des Données
+**Enrichissements à ajouter :**
+- Calcul de la durée du trajet (en minutes)
+- Extraction des dimensions temporelles (heure, jour, mois)
+- Calcul de la vitesse moyenne
+- Calcul du pourcentage de pourboire
 
-### `staging/stg_yellow_taxi_trips.sql`
+#### Tables à créer dans FINAL :
 
-#### 🚨 Problèmes à Corriger
+**Table de résumé quotidien :**
+- Nom : `FINAL.daily_summary`
+- Métriques par jour : nombre de trajets, distance moyenne, revenus totaux
+- Groupement par date de pickup
 
-| **Colonne** | **Problème** | **Solution** |
-|-------------|--------------|--------------|
-| `passenger_count` | 0, NULL, >6 | NULL/0 → 1, >6 → 6 |
-| `trip_distance` | Négatif, >100 miles | <0 → 0, >100 → NULL |
-| `pickup/dropoff_datetime` | pickup > dropoff | Exclure le trajet |
-| `fare_amount, tip_amount` | Valeurs négatives | <0 → 0 |
-| `PULocationID, DOLocationID` | NULL | Exclure le trajet |
+**Table d'analyse par zone :**
+- Nom : `FINAL.zone_analysis`
+- Métriques par zone de départ : volume, revenus moyens, popularité
 
-#### ➕ Colonnes Dérivées Ajoutées
-```sql
--- Dimensions temporelles
-pickup_date = DATE(tpep_pickup_datetime)
-pickup_hour = EXTRACT(HOUR FROM tpep_pickup_datetime)
-pickup_day_of_week = EXTRACT(DOW FROM tpep_pickup_datetime)
-pickup_month = EXTRACT(MONTH FROM tpep_pickup_datetime)
-pickup_year = EXTRACT(YEAR FROM tpep_pickup_datetime)
-
--- Métriques calculées
-trip_duration_minutes = DATEDIFF(MINUTE, pickup, dropoff)
-avg_speed_mph = (trip_distance / trip_duration_minutes) * 60
-```
-
-#### 🔍 Filtres de Qualité
-```sql
-WHERE tpep_pickup_datetime IS NOT NULL
-  AND tpep_dropoff_datetime IS NOT NULL
-  AND tpep_pickup_datetime < tpep_dropoff_datetime
-  AND tpep_pickup_datetime >= '2009-01-01'
-  AND pulocationid IS NOT NULL
-  AND dolocationid IS NOT NULL
-```
+**Table des patterns horaires :**
+- Nom : `FINAL.hourly_patterns`
+- Métriques par heure : demande, revenus, vitesse moyenne
 
 ---
 
-## ⚙️ ÉTAPE 2 : Intermediate - Calculs et Catégorisations
+## 🚀 PARTIE 2 : OPTIONS AVANCÉES (Optionnel)
 
-### `intermediate/int_trip_metrics.sql`
+### 🌟 Option A : Orchestration avec Airflow/Dagster
 
-#### 📊 Catégories Métier Créées
+**📺 Ressource recommandée** : [Tutorial Airflow NYC Taxi](https://www.youtube.com/watch?v=OLXkGB7krGo&t=518s)
 
-**Distance du Trajet**
-```sql
-distance_category = CASE 
-    WHEN trip_distance <= 1 THEN 'Court (≤1 mile)'
-    WHEN trip_distance <= 3 THEN 'Moyen (1-3 miles)'
-    WHEN trip_distance <= 10 THEN 'Long (3-10 miles)'
-    ELSE 'Très long (>10 miles)'
-END
-```
+#### Qu'est-ce qu'Airflow ?
+Airflow est un outil d'orchestration qui permet d'automatiser et de planifier vos pipelines de données. Pour ce projet, vous créerez un DAG (Directed Acyclic Graph) qui :
 
-**Durée du Trajet**
-```sql
-duration_category = CASE 
-    WHEN trip_duration_minutes <= 10 THEN 'Rapide (≤10 min)'
-    WHEN trip_duration_minutes <= 30 THEN 'Normal (10-30 min)'
-    WHEN trip_duration_minutes <= 60 THEN 'Long (30-60 min)'
-    ELSE 'Très long (>60 min)'
-END
-```
+- **Télécharge automatiquement** les nouvelles données chaque mois
+- **Charge les données** dans Snowflake
+- **Exécute les transformations** SQL
+- **Valide la qualité** des données
+- **Envoie des notifications** en cas d'erreur
 
-**Période de la Journée**
-```sql
-time_period = CASE 
-    WHEN pickup_hour BETWEEN 6 AND 9 THEN 'Rush Matinal'
-    WHEN pickup_hour BETWEEN 10 AND 15 THEN 'Journée'
-    WHEN pickup_hour BETWEEN 16 AND 19 THEN 'Rush Soir'
-    WHEN pickup_hour BETWEEN 20 AND 23 THEN 'Soirée'
-    ELSE 'Nuit'
-END
-```
+#### Avantages d'Airflow :
+- Interface web pour monitorer les pipelines
+- Gestion des erreurs et reprises automatiques
+- Planification flexible (quotidien, mensuel, etc.)
+- Intégration native avec Snowflake
 
-**Type de Jour**
-```sql
-day_name = CASE pickup_day_of_week
-    WHEN 0 THEN 'Dimanche'
-    WHEN 1 THEN 'Lundi'
-    -- ... etc
-END
+### 🌟 Option B : Orchestration avec GitHub Actions
 
-is_weekend = CASE 
-    WHEN pickup_day_of_week IN (0, 6) THEN 'Weekend'
-    ELSE 'Semaine'
-END
-```
+#### Qu'est-ce que GitHub Actions ?
+GitHub Actions permet d'automatiser vos workflows directement depuis votre repository Git. C'est une alternative gratuite et simple à Airflow.
 
-**Métrique Financière**
-```sql
-tip_rate_percent = CASE 
-    WHEN fare_amount > 0 
-    THEN (tip_amount / fare_amount) * 100
-    ELSE 0
-END
-```
+#### Fonctionnalités du pipeline :
+- **Déclenchement automatique** : Chaque 1er du mois ou manuellement
+- **Environnement contrôlé** : Utilise Ubuntu avec Python
+- **Secrets sécurisés** : Identifiants Snowflake stockés de manière sécurisée
+- **Notifications** : Succès/échec visible dans GitHub
 
----
+#### Idéal pour :
+- Projets étudiants (gratuit)
+- Simplicité de mise en place
+- Intégration avec votre code versioning
 
-## 🎯 ÉTAPE 3 : Marts Core - Table de Faits Finale
+### 🌟 Option C : Transformation avec DBT Core
 
-### `marts/core/fact_trips.sql`
+**📺 Ressources recommandées** :
+- [DBT Core vs DBT Cloud](https://www.youtube.com/watch?v=ZbLzOgAMAwk)
+- [DBT + Snowflake Guide](https://dipikajiandani.medium.com/dbt-snowflake-2831681b67f9)
 
-#### 🏗️ Structure de la Table de Faits
+#### Qu'est-ce que DBT ?
+DBT (Data Build Tool) est l'outil moderne pour transformer les données dans votre data warehouse. Il vous permet de :
 
-**🔑 Clés et Identifiants**
-```sql
-trip_key = generate_surrogate_key([pickup_datetime, pulocationid, dolocationid, fare_amount])
-```
+- **Écrire des transformations** en SQL pur
+- **Tester automatiquement** la qualité des données
+- **Documenter** vos modèles automatiquement
+- **Versionner** vos transformations avec Git
 
-**📅 Dimensions Temporelles**
-```sql
-pickup_date, pickup_hour, pickup_day_of_week, day_name, 
-is_weekend, time_period, pickup_month, pickup_year
-```
+#### Structure DBT pour ce projet :
 
-**🗺️ Dimensions Géographiques**
-```sql
-pulocationid, dolocationid
-```
+**Modèles Staging (dossier staging/) :**
+- `stg_yellow_taxi_trips.sql` : Nettoyage des données brutes
+  - Filtrage des valeurs aberrantes
+  - Standardisation des formats
+  - Tests de qualité intégrés
 
-**🚗 Dimensions de Voyage**
-```sql
-passenger_count, distance_category, duration_category, 
-payment_type, vendorid
-```
+**Modèles Intermediate (dossier intermediate/) :**
+- `int_trip_metrics.sql` : Enrichissement des données
+  - Ajout de catégories (distance, période temporelle)
+  - Calcul de métriques (vitesse, pourboires)
+  - Dimensions business créées
 
-**📊 Métriques de Performance**
-```sql
--- Distance et Temps
-trip_distance, trip_duration_minutes, avg_speed_mph
+**Modèles Marts (dossier marts/) :**
+- `fact_trips.sql` : Table de faits principale
+- `daily_summary.sql` : Résumés quotidiens
+- `zone_analysis.sql` : Analyses par zone géographique
+- `hourly_patterns.sql` : Patterns de demande horaire
 
--- Financier
-fare_amount, tip_amount, tip_rate_percent, extra, mta_tax,
-tolls_amount, improvement_surcharge, congestion_surcharge, 
-airport_fee, total_amount
-```
+#### Avantages de DBT :
+- **Tests intégrés** : Validation automatique de la qualité
+- **Documentation auto-générée** : Site web avec description des tables
+- **Lignage des données** : Visualisation des dépendances entre tables
+- **Modularité** : Réutilisation des transformations
 
-**🔧 Optimisations Techniques**
-```sql
--- Index pour performance
-indexes=[
-  {'columns': ['pickup_date'], 'type': 'btree'},
-  {'columns': ['pulocationid', 'dolocationid'], 'type': 'btree'}
-]
-```
+### 🌟 Option D : Architecture ELT Moderne
 
----
+**📖 Ressource recommandée** : [Modern ELT Architecture](https://mayursurani.medium.com/modern-elt-with-dbt-snowflake-and-aws-building-modular-testable-and-governed-data-pipeline-cda2616ad96a)
 
-## 📈 ÉTAPE 4 : Marts Analytics - Tables d'Analyse
+#### Comprendre l'approche ELT :
+- **Extract** : Récupération des données depuis les sources (NYC Open Data)
+- **Load** : Chargement direct dans Snowflake (schéma RAW)
+- **Transform** : Transformations SQL dans Snowflake (STAGING → FINAL)
 
-### 1. `daily_trip_summary.sql` - Résumé Quotidien
+#### Avantages de l'ELT avec Snowflake :
+- Utilisation de la puissance de calcul de Snowflake
+- Pas de serveur ETL externe nécessaire
+- Scalabilité automatique selon les besoins
+- Coût optimisé (paiement à l'usage)
 
-#### 📊 Métriques de Volume
-```sql
-total_trips = COUNT(*)
-unique_pickup_zones = COUNT(DISTINCT pulocationid)
-unique_dropoff_zones = COUNT(DISTINCT dolocationid)
-```
+#### Principes de Gouvernance des Données :
+- **Data Lineage** : Tracer l'origine et les transformations de chaque donnée
+- **Data Quality** : Tests automatisés à chaque étape
+- **Data Catalog** : Documentation automatique des tables et colonnes
+- **Data Security** : Contrôles d'accès par schéma et rôle
 
-#### 🚀 Métriques de Performance
-```sql
-avg_trip_distance = AVG(trip_distance)
-median_trip_distance = MEDIAN(trip_distance)
-avg_trip_duration = AVG(trip_duration_minutes)
-avg_speed = AVG(avg_speed_mph)
-```
+### 🌟 Option E : Analyses Avancées et DataViz
 
-#### 💰 Métriques Financières
-```sql
-total_revenue = SUM(total_amount)
-avg_trip_value = AVG(total_amount)
-total_tips = SUM(tip_amount)
-avg_tip_rate = AVG(tip_rate_percent)
-```
+#### Dashboards à Créer :
+1. **Monitoring Opérationnel**
+   - KPIs en temps réel (trajets, revenus)
+   - Heatmaps géographiques des zones actives
+   - Alertes sur les anomalies de trafic
 
-#### 🕐 Répartition Temporelle
-```sql
-morning_rush_trips = SUM(CASE WHEN time_period = 'Rush Matinal' THEN 1 ELSE 0 END)
-evening_rush_trips = SUM(CASE WHEN time_period = 'Rush Soir' THEN 1 ELSE 0 END)
-night_trips = SUM(CASE WHEN time_period = 'Nuit' THEN 1 ELSE 0 END)
-```
+2. **Analyses Business**
+   - ROI par zone et période
+   - Optimisation de la flotte de taxis
+   - Prédiction de la demande future
 
-### 2. `hourly_demand_patterns.sql` - Patterns Horaires
-
-#### 🔍 Analyses par Heure
-```sql
--- Volume et revenus par heure de la journée
-trips_per_hour, revenue_per_hour, avg_speed_by_hour
-
--- Identification des pics de demande
-peak_hours, demand_intensity, surge_indicators
-
--- Patterns weekend vs semaine
-weekend_vs_weekday_patterns
-```
-
-### 3. `location_analysis.sql` - Analyse Géographique
-
-#### 🗺️ Métriques par Zone
-```sql
--- Popularité des zones
-pickup_volume_by_zone = COUNT(*) GROUP BY pulocationid
-dropoff_volume_by_zone = COUNT(*) GROUP BY dolocationid
-
--- Rentabilité par zone
-avg_fare_by_pickup_zone = AVG(fare_amount) GROUP BY pulocationid
-most_profitable_routes = TOP routes by total_revenue
-
--- Patterns spéciaux
-airport_traffic_patterns = WHERE airport_fee > 0
-manhattan_vs_outer_boroughs = comparaison volumes/revenus
-```
-
-### 4. `revenue_analysis.sql` - Analyse Financière
-
-#### 💳 Analyse des Pourboires
-```sql
--- Par type de paiement
-tip_analysis_by_payment_type = AVG(tip_rate_percent) GROUP BY payment_type
-
--- Par distance et durée
-tip_correlation_with_distance = correlation(tip_rate, distance_category)
-tip_patterns_by_time = AVG(tip_rate) GROUP BY time_period
-```
-
-#### 📈 Optimisation Tarifaire
-```sql
--- Opportunités d'optimisation
-fare_optimization_opportunities = zones sous-facturées
-revenue_by_distance_category = rentabilité par type de trajet
-price_elasticity_indicators = sensibilité prix/demande
-```
+3. **Outils de Visualisation Recommandés**
+   - **Streamlit** : Dashboards Python interactifs (gratuit)
+   - **Tableau** : Visualisations professionnelles
+   - **PowerBI** : Integration Microsoft native
 
 ---
 
-## 🧪 Validation et Tests
+## 📝 LIVRABLES ATTENDUS
 
-### 🔍 Tests de Qualité des Données
-```sql
--- Tests automatiques DBT
-tests:
-  - unique: trip_key
-  - not_null: [pickup_date, total_amount]
-  - accepted_range: 
-      min_value: 0
-      max_value: 100 (pour trip_distance)
-```
+### Pour le Tronc Commun :
+1. **Architecture Snowflake** : Création des schémas RAW/STAGING/FINAL
+2. **Scripts SQL/DBT** : Tables et transformations documentées
+3. **Documentation** : README avec instructions d'exécution
+4. **Analyse** : Rapport sur la qualité des données et KPIs calculés
 
-### ✅ Tests Métier
-```sql
--- Durées de trajet positives
-assert_positive_trip_duration.sql
+### Pour les Options Avancées :
+5. **Script Python** : Automatisation du chargement des données (si option choisie)
+6. **Orchestration** : Pipeline automatisé (Airflow/Dagster/GitHub Actions)
+7. **DBT Core** : Modèles de transformation avec tests et documentation
+8. **Dashboard** : Visualisations interactives des KPIs principaux
 
--- Cohérence des montants
-assert_total_amount_consistency.sql
-
--- Zones valides uniquement
-assert_valid_location_ids.sql
-```
 
 ---
 
-## 🚀 Déploiement et Exécution
+## 📊 CRITÈRES D'ÉVALUATION
 
-### 📋 Commandes Essentielles
-```bash
-# Validation de la configuration
-dbt debug
+### Tronc Commun (70% de la note)
+- ✅ Chargement complet des données 2024-2025
+- ✅ Architecture RAW/STAGING/FINAL respectée
+- ✅ Nettoyage des données efficace
+- ✅ Documentation claire et complète
+- ✅ Code Python et SQL fonctionnels
 
-# Exécution du pipeline complet
-dbt deps        # Installer les packages
-dbt run         # Exécuter les transformations
-dbt test        # Valider la qualité
-dbt docs generate  # Générer la documentation
-
-# Exécution ciblée
-dbt run --select stg_yellow_taxi_trips+
-dbt test --select fact_trips
-```
-
-### 🔄 Workflow de Développement
-```bash
-# Développement itératif
-dbt run --select nouveau_modele
-dbt test --select nouveau_modele
-
-# Validation complète avant production
-dbt build  # run + test en une commande
-```
+### Options Avancées (30% de la note)
+- 🌟 Orchestration automatisée
+- 🌟 Transformations DBT Core
+- 🌟 Dashboard de visualisation
+- 🌟 Tests de qualité des données
+- 🌟 Optimisation des performances
 
 ---
 
-## 📊 Résultats Attendus
+## 🔧 TRANSFORMATIONS À IMPLÉMENTER
 
-### 🎯 Tables Finales Créées
+### 📊 Catégorisations Nécessaires :
 
-| **Table** | **Type** | **Volumétrie** | **Usage** |
-|-----------|----------|----------------|-----------|
-| `fact_trips` | Table de faits | 3+ milliards de lignes | Analyses détaillées |
-| `daily_trip_summary` | Agrégat | ~5,000 lignes | Reporting quotidien |
-| `hourly_demand_patterns` | Agrégat | ~200,000 lignes | Analyse patterns |
-| `location_analysis` | Agrégat | ~500 lignes | Géo-analytics |
-| `revenue_analysis` | Agrégat | ~10,000 lignes | Analyses financières |
+#### Distances des Trajets :
+- **Courts trajets** : ≤ 1 mile (déplacements locaux)
+- **Trajets moyens** : 1-5 miles (trajets urbains typiques)
+- **Longs trajets** : 5-10 miles (traversée d'arrondissements)
+- **Très longs trajets** : > 10 miles (aéroports, banlieue)
 
-### 📈 KPIs Disponibles
+#### Périodes Temporelles :
+- **Rush Matinal** : 6h-9h (pic de trafic vers le travail)
+- **Journée** : 10h-15h (trafic normal)
+- **Rush Soir** : 16h-19h (retour du travail)
+- **Soirée** : 20h-23h (sorties, restaurants)
+- **Nuit** : 0h-5h (trafic réduit)
 
-**Opérationnels**
-- Volume de trajets par jour/heure/zone
-- Vitesses moyennes par zone et période
-- Patterns de demande saisonniers
+#### Types de Jours :
+- **Jours de semaine** : Lundi-Vendredi (patterns professionnels)
+- **Weekend** : Samedi-Dimanche (patterns loisirs)
 
-**Financiers**
-- Chiffre d'affaires total et par segment
-- Évolution des pourboires par type de paiement
-- Rentabilité par zone géographique
-
-**Satisfaction Client**
-- Durées moyennes de trajet
-- Taux de pourboire comme proxy satisfaction
-- Zones préférées et évitées
+### 🧮 Métriques Calculées :
+- **Durée des trajets** : Temps entre prise en charge et dépose
+- **Vitesse moyenne** : Distance divisée par durée
+- **Taux de pourboire** : Pourcentage du pourboire vs tarif de base
 
 ---
 
-## 🔧 Optimisations et Bonnes Pratiques
+## 💡 CONSEILS ET RESSOURCES
 
-### ⚡ Performance
-```sql
--- Partitionnement par date
-CLUSTER BY (pickup_date)
+### Outils Recommandés :
+- **Snowflake** : Essai gratuit 30 jours (400$ de crédits)
+- **VS Code** : Avec extensions Python et SQL
+- **DBT Core** : Installation via pip (optionnel)
+- **GitHub** : Pour versionner votre code
 
--- Matérialisation adaptée
-models:
-  staging: materialized='view'      # Transformations légères
-  marts: materialized='table'       # Tables fréquemment requêtées
-```
+### Ressources Essentielles :
 
-### 🔒 Sécurité
-```yaml
-# Variables d'environnement
-password: "{{ env_var('DBT_SNOWFLAKE_PASSWORD') }}"
+#### 📺 Tutoriels Vidéo Recommandés :
+- [**DBT + Snowflake End-to-End**](https://www.youtube.com/watch?v=l-CpmeTFqoI) - Tutorial complet sur l'intégration DBT et Snowflake
+- [**DBT Core vs DBT Cloud**](https://www.youtube.com/watch?v=ZbLzOgAMAwk) - Comprendre les différences et choisir la bonne approche
+- [**Airflow + NYC Taxi Data**](https://www.youtube.com/watch?v=OLXkGB7krGo&t=518s) - Pipeline d'orchestration avec Airflow
 
-# Permissions minimales par environnement
-dev: lecture/écriture schémas staging
-prod: lecture seule schémas marts
-```
+#### 📖 Articles Techniques :
+- [**DBT + Snowflake Guide Pratique**](https://dipikajiandani.medium.com/dbt-snowflake-2831681b67f9) - Configuration et bonnes pratiques
+- [**Modern ELT Architecture**](https://mayursurani.medium.com/modern-elt-with-dbt-snowflake-and-aws-building-modular-testable-and-governed-data-pipeline-cda2616ad96a) - Architecture complète avec gouvernance des données
 
-### 📚 Documentation
-```yaml
-# Description de chaque modèle
-models:
-  - name: fact_trips
-    description: "Table de faits des trajets avec métriques calculées"
-    columns:
-      - name: trip_key
-        description: "Clé unique générée pour chaque trajet"
-```
+#### 📚 Documentation Officielle :
+- [Documentation Snowflake](https://docs.snowflake.com)
+- [NYC TLC Data Dictionary](https://www.nyc.gov/assets/tlc/downloads/pdf/data_dictionary_trip_records_yellow.pdf)
+- [DBT Core Docs](https://docs.getdbt.com)
+- [Airflow Documentation](https://airflow.apache.org/docs/)
 
----
+### Types d'Analyses à Implémenter :
 
-## 🎯 Cas d'Usage Avancés
+#### 🔍 Analyses de Volume :
+- **Top 10 des zones de départ** : Identifier les zones les plus populaires pour les prises en charge
+- **Évolution mensuelle** : Suivre les tendances du nombre de trajets dans le temps
+- **Distribution horaire** : Comprendre les pics de demande selon l'heure de la journée
 
-### 🤖 Machine Learning
-- **Prédiction de demande** : Forecast des trajets par zone/heure
-- **Détection d'anomalies** : Trajets suspects ou erreurs de capteur
-- **Optimisation d'itinéraires** : Recommandations basées sur patterns historiques
+#### 💰 Analyses Financières :
+- **Revenus par jour de la semaine** : Comparer la rentabilité entre semaine et weekend
+- **Analyse des pourboires** : Étudier les patterns de pourboires selon le type de paiement
+- **Rentabilité par zone** : Identifier les zones les plus lucratives
 
-### 📊 Business Intelligence
-- **Dashboards opérationnels** : Monitoring temps réel de la flotte
-- **Analyses stratégiques** : Expansion géographique, optimisation tarifaire
-- **Rapports réglementaires** : Conformité avec les autorités de transport
-
-### 🔍 Analytics Avancés
-- **Segmentation clients** : Profils de voyage par type d'utilisateur
-- **Analyse de cohortes** : Évolution des patterns de mobilité
-- **Impact événementiel** : Influence météo, événements sur la demande
+#### 🚗 Analyses Opérationnelles :
+- **Vitesse moyenne par période** : Analyser la fluidité du trafic selon les heures
+- **Distance moyenne des trajets** : Comprendre les patterns de mobilité
+- **Temps d'attente estimés** : Calculer les durées moyennes par zone
 
 ---
 
-## ⏱️ Timeline du Projet
+## 🎯 RÉSULTATS ATTENDUS
 
-| **Phase** | **Durée** | **Activités** |
-|-----------|-----------|---------------|
-| **Setup** | 1h | Comptes, installations, configuration |
-| **Data Loading** | 3-4h | Téléchargement et chargement données |
-| **DBT Development** | 4-6h | Développement modèles et tests |
-| **Validation** | 1-2h | Tests, documentation, optimisation |
-| **Déploiement** | 1h | Production, monitoring |
-| **TOTAL** | **10-14h** | **Projet complet fonctionnel** |
+### À la fin des 3 jours, vous devez avoir :
+
+1. **Un Data Warehouse fonctionnel** avec 3 schémas (RAW, STAGING, FINAL)
+2. **Minimum 12 mois de données** chargées et nettoyées (année 2024 complète)
+3. **Au minimum 3 tables d'analyse** dans le schéma FINAL
+4. **Documentation README** avec instructions d'exécution
+
+### KPIs à calculer (minimum) :
+- Nombre total de trajets par mois
+- Revenu moyen par trajet
+- Distance moyenne parcourue
+- Top 10 des zones les plus populaires
+- Analyse des heures de pointe
 
 ---
 
-## 🎉 Conclusion
+## 🎓 CONCLUSION
 
-Ce pipeline vous fournit :
+Ce projet vous permettra de :
+- ✅ Maîtriser l'architecture d'un data warehouse moderne
+- ✅ Gérer des volumes de données réels (plusieurs GB)
+- ✅ Appliquer les bonnes pratiques de data engineering
+- ✅ Créer un portfolio professionnel avec un projet concret
 
-✅ **Infrastructure robuste** avec Snowflake  
-✅ **Transformations documentées** avec DBT  
-✅ **Données prêtes pour l'analyse** avec 750+ GB nettoyés  
-✅ **Tests automatisés** pour la qualité  
-✅ **Documentation auto-générée** pour la maintenance  
-
-**🚀 Prochaines étapes :**
-1. Démarrer avec quelques mois de données pour validation
-2. Étendre progressivement le dataset
-3. Ajouter des analyses spécifiques métier
-4. Intégrer des outils de visualisation
-5. Explorer le machine learning sur les données transformées
-
-**💡 Ce projet vous donne une base solide pour devenir expert en ingénierie de données moderne !**
+**Bon courage et n'hésitez pas à poser des questions !**
